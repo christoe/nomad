@@ -3,6 +3,7 @@ package stats
 import (
 	"math"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/shirou/gopsutil/cpu"
@@ -56,6 +57,9 @@ type HostStatsCollector struct {
 	clkSpeed        float64
 	numCores        int
 	statsCalculator map[string]*HostCpuStatsCalculator
+
+	hostStats     *HostStats
+	hostStatsLock sync.RWMutex
 }
 
 // NewHostStatsCollector returns a HostStatsCollector
@@ -70,11 +74,11 @@ func NewHostStatsCollector() *HostStatsCollector {
 }
 
 // Collect collects stats related to resource usage of a host
-func (h *HostStatsCollector) Collect() (*HostStats, error) {
+func (h *HostStatsCollector) Collect() error {
 	hs := &HostStats{Timestamp: time.Now().UTC().UnixNano()}
 	memStats, err := mem.VirtualMemory()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	hs.Memory = &MemoryStats{
 		Total:     memStats.Total,
@@ -86,7 +90,7 @@ func (h *HostStatsCollector) Collect() (*HostStats, error) {
 	ticksConsumed := 0.0
 	cpuStats, err := cpu.Times(true)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cs := make([]*CPUStats, len(cpuStats))
 	for idx, cpuStat := range cpuStats {
@@ -110,13 +114,13 @@ func (h *HostStatsCollector) Collect() (*HostStats, error) {
 
 	partitions, err := disk.Partitions(false)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var diskStats []*DiskStats
 	for _, partition := range partitions {
 		usage, err := disk.Usage(partition.Mountpoint)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		ds := DiskStats{
 			Device:            partition.Device,
@@ -139,11 +143,20 @@ func (h *HostStatsCollector) Collect() (*HostStats, error) {
 
 	uptime, err := host.Uptime()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	hs.Uptime = uptime
 
-	return hs, nil
+	h.hostStatsLock.Lock()
+	defer h.hostStatsLock.Unlock()
+	h.hostStats = hs
+	return nil
+}
+
+func (h *HostStatsCollector) Stats() *HostStats {
+	h.hostStatsLock.RLock()
+	defer h.hostStatsLock.RUnlock()
+	return h.hostStats
 }
 
 // HostCpuStatsCalculator calculates cpu usage percentages
